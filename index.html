@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Nearby — find anything, get directions</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.0/dist/maplibre-gl.css"
+        onerror="this.onerror=null;this.href='https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css'">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="map" aria-label="Interactive map"></div>
+
+  <!-- Search bar and category shortcuts -->
+  <div class="search-shell" id="searchShell">
+    <form class="search-box" id="searchForm" autocomplete="off">
+      <svg class="search-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5Zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Z"/></svg>
+      <input id="searchInput" type="search" placeholder="Search places near you" aria-label="Search nearby places">
+      <button class="icon-button clear-search" id="clearSearch" type="button" aria-label="Clear search" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4Z"/></svg>
+      </button>
+      <button class="icon-button search-go" id="searchGo" type="submit" aria-label="Search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 16.5 15 11l-5.5-5.5-1.4 1.4L12.2 11l-4.1 4.1 1.4 1.4Z"/></svg>
+      </button>
+      <span class="box-divider"></span>
+      <button class="directions-shortcut" id="openDirections" type="button" title="Directions" aria-label="Open directions">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.7 11.3 12.7 2.3a1 1 0 0 0-1.4 0L2.3 11.3a1 1 0 0 0 0 1.4l9 9a1 1 0 0 0 1.4 0l9-9a1 1 0 0 0 0-1.4ZM12 17.2l-5.2-5.2L12 6.8l5.2 5.2L12 17.2Z"/><circle cx="12" cy="11.9" r="1.6"/></svg>
+      </button>
+    </form>
+    <div class="quick-row">
+      <div class="chip-scroll" id="categoryChips" role="group" aria-label="Search categories"></div>
+      <div class="radius-control">
+        <button id="radiusBtn" type="button" title="Search radius">5 km</button>
+        <div class="radius-menu" id="radiusMenu" hidden>
+          <button type="button" data-radius="1000">1 km</button>
+          <button type="button" data-radius="3000">3 km</button>
+          <button type="button" data-radius="5000">5 km</button>
+          <button type="button" data-radius="10000">10 km</button>
+          <button type="button" data-radius="15000">15 km</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Left panel: results, place details, directions -->
+  <aside class="panel" id="panel" hidden aria-live="polite">
+    <button class="panel-handle" id="panelHandle" type="button" aria-label="Expand or collapse panel"><span></span></button>
+    <div id="resultsView">
+      <div class="panel-head">
+        <div>
+          <h2 id="resultsTitle">Nearby places</h2>
+          <p id="resultsSubtitle">Searching around your current area</p>
+        </div>
+        <button class="icon-button panel-close" data-close-panel type="button" aria-label="Close panel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4Z"/></svg>
+        </button>
+      </div>
+      <div class="location-gate" id="locationGate" hidden>
+        <div class="gate-icon">📍</div>
+        <strong>Location needed</strong>
+        <p>This app uses your real position — there is no demo start point. Allow location access to find places around you.</p>
+        <button class="primary-action" id="retryLocation" type="button">Use my location</button>
+      </div>
+      <div id="resultsStatus" class="inline-status">Waiting for your location…</div>
+      <div class="result-list" id="resultList"></div>
+      <div class="panel-footer" id="resultsFooter"></div>
+    </div>
+
+    <div id="placeView" hidden>
+      <div class="panel-head">
+        <div class="place-heading">
+          <span class="place-icon" id="placeIcon">📍</span>
+          <div>
+            <h2 id="placeName">Place</h2>
+            <p id="placeCategory">Place</p>
+          </div>
+        </div>
+        <button class="icon-button panel-close" data-close-panel type="button" aria-label="Close panel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4Z"/></svg>
+        </button>
+      </div>
+      <div class="place-body">
+        <div class="place-actions">
+          <button class="primary-action" id="placeDirections" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.7 11.3 12.7 2.3a1 1 0 0 0-1.4 0L2.3 11.3a1 1 0 0 0 0 1.4l9 9a1 1 0 0 0 1.4 0l9-9a1 1 0 0 0 0-1.4ZM12 17.2l-5.2-5.2L12 6.8l5.2 5.2L12 17.2Z"/><circle cx="12" cy="11.9" r="1.6"/></svg>
+            Directions
+          </button>
+          <button class="soft-action" id="copyLink" type="button">Share</button>
+        </div>
+        <div class="info-list" id="placeInfo"></div>
+      </div>
+    </div>
+
+    <div id="directionsView" hidden>
+      <div class="panel-head dir-head">
+        <h2>Directions</h2>
+        <button class="icon-button panel-close" data-close-panel type="button" aria-label="Close directions">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4Z"/></svg>
+        </button>
+      </div>
+
+      <div class="route-form">
+        <div class="route-fields">
+          <span class="field-dot start"></span>
+          <span class="field-dot end"></span>
+          <input id="originInput" aria-label="Starting point" placeholder="Choose starting point">
+          <input id="destinationInput" aria-label="Destination" placeholder="Choose destination">
+          <button class="icon-button swap-button" id="swapPlaces" type="button" title="Swap start and destination" aria-label="Swap start and destination">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6h10l-2.5-2.5 1.4-1.4L21 7l-5.1 4.9-1.4-1.4L17 8H7V6Zm10 12H7l2.5 2.5-1.4 1.4L3 17l5.1-4.9 1.4 1.4L7 16h10v2Z"/></svg>
+          </button>
+        </div>
+        <div class="mode-tabs" id="modeTabs" role="group" aria-label="Travel mode">
+          <button type="button" data-mode="walk" class="active" title="Walking">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="4" r="2"/><path d="m9.6 7.2-2 9 2.1.5 1.5-5.6 2.1 2v5h2v-6.5l-2.5-2.3.6-2.8 2.4 1.9 3.1.5.4-2-2.3-.4-3.5-2.7a2 2 0 0 0-2.6-.1L9.6 7.2Z"/></svg>
+            <span>Walking</span>
+          </button>
+          <button type="button" data-mode="drive" title="Driving">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11 6.6 6h10.8L19 11h1a2 2 0 0 1 2 2v5h-2v2h-2v-2H6v2H4v-2H2v-5a2 2 0 0 1 2-2h1Zm1.9 0h10.2l-1.1-3H8l-1.1 3ZM6.5 15.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm11 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/></svg>
+            <span>Driving</span>
+          </button>
+          <button type="button" data-mode="bike" title="Cycling">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="17" r="3.5"/><circle cx="18.5" cy="17" r="3.5"/><path d="m14 6 2 3h-4l-3 6h8l-3-5h2l3 5h1.5l-3.8-9H14Zm-2-3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>
+            <span>Cycling</span>
+          </button>
+        </div>
+        <button class="primary-action route-button" id="getRoute" type="button">Get directions</button>
+      </div>
+
+      <div class="route-status" id="routeStatus">Choose a destination to see the best route.</div>
+      <div id="routeResult" hidden>
+        <div class="route-summary">
+          <div>
+            <span class="summary-time" id="routeTime">—</span>
+            <span class="summary-distance" id="routeDistance">—</span>
+          </div>
+          <button class="primary-action start-button" id="startNavigation" type="button">Start</button>
+        </div>
+        <div class="step-list" id="stepList"></div>
+        <p class="route-credit" id="routeCredit"></p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Map controls -->
+  <div class="map-controls" aria-label="Map controls">
+    <div class="control-group">
+      <button id="zoomIn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+      <span class="control-divider"></span>
+      <button id="zoomOut" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+    </div>
+    <div class="control-group">
+      <button id="compassBtn" type="button" title="Reset bearing" aria-label="Reset bearing">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 3 8-3 2-3-2 3-8Zm0 20-3-8 3-2 3 2-3 8Z" fill="#ea4335"/><path d="m4 12 8-3 2 3-2 3-8-3Zm16 0-8 3-2-3 2-3 8 3Z" fill="#4285f4"/></svg>
+      </button>
+      <span class="control-divider"></span>
+      <button id="locateBtn" type="button" title="Use my location" aria-label="Use my location">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4"/></svg>
+      </button>
+    </div>
+    <div class="control-group">
+      <button id="layersBtn" type="button" title="Map layers" aria-label="Map layers">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 10 6-10 6L2 8l10-6Zm0 9.3 7-4.3-7-4.3L5 7l7 4.3ZM2 13l10 6 10-6-2-1.2-8 4.8-8-4.8L2 13Zm0 5 10 6 10-6-2-1.2-8 4.8-8-4.8L2 18Z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="layers-menu" id="layersMenu" hidden>
+    <button type="button" data-style="map" class="selected"><span class="style-thumb map"></span> Map</button>
+    <button type="button" data-style="satellite"><span class="style-thumb satellite"></span> Satellite</button>
+    <button type="button" data-style="dark"><span class="style-thumb dark"></span> Dark</button>
+  </div>
+
+  <button class="search-area-button" id="searchThisArea" type="button" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 14a6 6 0 1 1 0-12 6 6 0 0 1 0 12Zm-1-9h2v4l3 2-1 1.7-4-2.4V9Z"/></svg>
+    Search this area
+  </button>
+
+  <div class="nav-banner" id="navBanner" hidden>
+    <div class="nav-top">
+      <span class="nav-arrow" id="navArrow">↑</span>
+      <div class="nav-instruction">
+        <strong id="navInstruction">Head on route</strong>
+        <span id="navSubtext">Navigation started</span>
+      </div>
+      <button class="nav-exit" id="exitNavigation" type="button">Exit</button>
+    </div>
+    <div class="nav-progress"><div id="navProgressFill"></div></div>
+    <div class="nav-bottom"><span id="navRemaining">—</span><span id="navEta">—</span></div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="map-hint" id="mapHint">Drag the map to explore · click a pin for details</div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

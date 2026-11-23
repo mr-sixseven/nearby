@@ -1,0 +1,10 @@
+{
+  "name": "nearby",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Find anything nearby and get turn-by-turn directions on a Google Maps-style map.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
