@@ -1,4 +1,7 @@
-import { CATEGORIES, CATEGORY_BY_ID, interpretQuery, OTHER_CATEGORY } from './categories.js';
+import {
+  CATEGORIES, CATEGORY_BY_ID, interpretQuery, OTHER_CATEGORY,
+  buildOverpassQuery, normalizePlaces
+} from './categories.js';
 
 // The map library is an external dependency, not a nested project in this folder.
 async function ensureMapLibre() {
@@ -280,15 +283,241 @@ function placeLabel(place) {
   return place.name || categoryOf(place).label.replace(/s$/, '');
 }
 
+/* --------------------- API with direct-API fallback --------------------- */
+
+const DIRECT_OVERPASS = [
+  'https://api.overpass-turbo.eu/interpreter',
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
+];
+const DIRECT_VALHALLA = 'https://valhalla1.openstreetmap.de/route';
+const DIRECT_PHOTON = 'https://photon.komoot.io/api/';
+let staticModeAnnounced = false;
+let staticMode = false;
+
+function announceStaticMode() {
+  if (staticModeAnnounced) return;
+  staticModeAnnounced = true;
+  staticMode = true;
+  toast('No local API server detected — using public OpenStreetMap services directly.', 5200);
+  if (!$('resultsFooter').textContent.includes('Static hosting')) {
+    $('resultsFooter').textContent += ' · Static hosting mode';
+  }
+}
+
+async function fetchJsonDirect(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return JSON.parse(text);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function directSearch(body) {
+  const radius = Math.min(15000, Math.max(300, Number(body.radius) || 5000));
+  let categoryId = String(body.categoryId || '');
+  let text = String(body.text || '').trim().slice(0, 120);
+  if (text && !categoryId) {
+    const interpreted = interpretQuery(text);
+    if (interpreted) categoryId = interpreted.id;
+  }
+
+  const query = buildOverpassQuery({ lat: body.lat, lon: body.lon, radius, categoryId, text });
+  if (!query) throw new Error('Tell me what to look for.');
+
+  const failures = [];
+  for (const endpoint of DIRECT_OVERPASS) {
+    try {
+      const data = await fetchJsonDirect(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'Accept': 'application/json'
+        },
+        body: new URLSearchParams({ data: query }).toString()
+      });
+      if (!Array.isArray(data.elements)) throw new Error('Invalid Overpass response.');
+      return {
+        places: normalizePlaces(data.elements, body.lat, body.lon),
+        source: new URL(endpoint).hostname,
+        category: CATEGORY_BY_ID[categoryId] || OTHER_CATEGORY,
+        radius
+      };
+    } catch (error) {
+      failures.push(`${new URL(endpoint).hostname}: ${error.message}`);
+    }
+  }
+  throw new Error(`All public map data services failed. ${failures.join(' | ')}`);
+}
+
+function decodePolyline6(encoded) {
+  let index = 0;
+  let lat = 0;
+  let lon = 0;
+  const points = [];
+
+  function readValue() {
+    let result = 0;
+    let shift = 0;
+    let byte;
+    do {
+      if (index >= encoded.length) throw new Error('Invalid route shape.');
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    return (result & 1) ? ~(result >> 1) : (result >> 1);
+  }
+
+  while (index < encoded.length) {
+    lat += readValue();
+    lon += readValue();
+    points.push([lat / 1e6, lon / 1e6]);
+  }
+  return points;
+}
+
+async function directRoute(body) {
+  const costing = { walk: 'pedestrian', drive: 'auto', bike: 'bicycle' }[body.mode] || 'pedestrian';
+  const data = await fetchJsonDirect(DIRECT_VALHALLA, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      locations: [
+        { lat: body.from.lat, lon: body.from.lon },
+        { lat: body.to.lat, lon: body.to.lon }
+      ],
+      costing,
+      units: 'kilometers',
+      language: 'en-US',
+      directions_type: 'instructions'
+    })
+  });
+
+  if (data.trip?.status !== 0 || !data.trip.summary || !data.trip.legs?.[0]?.shape) {
+    throw new Error(data.trip?.status_message || 'No usable route returned.');
+  }
+  const shape = data.trip.legs[0].shape;
+  const encoded = shape.includes('(')
+    ? (shape.match(/polyline6\((.+)\)/)?.[1] || shape.replace(/[()]/g, ''))
+    : shape;
+  const coordinates = decodePolyline6(encoded);
+  const distanceKm = Number(data.trip.summary.length);
+  const durationSeconds = Number(data.trip.summary.time);
+  if (!Number.isFinite(distanceKm) || distanceKm <= 0 ||
+      !Number.isFinite(durationSeconds) || durationSeconds < 0 || coordinates.length < 2) {
+    throw new Error('Route response was invalid.');
+  }
+  return {
+    distanceKm,
+    durationSeconds,
+    coordinates,
+    maneuvers: (data.trip.legs[0].maneuvers || []).map((step) => ({
+      instruction: step.instruction || 'Continue on the route',
+      distanceKm: Number(step.length) || 0,
+      durationSeconds: Number(step.time) || 0,
+      shapeIndex: Number(step.begin_shape_index) || 0,
+      type: Number(step.type) || 0
+    }))
+  };
+}
+
+async function directGeocode(q) {
+  const coordinate = q.match(/^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
+  if (coordinate) {
+    const lat = Number(coordinate[1]);
+    const lon = Number(coordinate[2]);
+    if (lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { results: [{ label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon }] };
+    }
+  }
+
+  try {
+    const target = new URL(DIRECT_PHOTON);
+    target.searchParams.set('q', q);
+    target.searchParams.set('limit', '5');
+    const data = await fetchJsonDirect(target);
+    const results = (data.features || []).map((feature) => {
+      const props = feature.properties || {};
+      const [lon, lat] = feature.geometry?.coordinates || [];
+      return {
+        label: [props.name, props.city || props.town || props.county, props.state, props.country]
+          .filter(Boolean).join(', '),
+        lat: Number(lat),
+        lon: Number(lon)
+      };
+    }).filter((item) => item.label && Number.isFinite(item.lat) && Number.isFinite(item.lon));
+    if (results.length) return { results };
+  } catch (error) {
+    console.warn('[geocode] Photon failed:', error.message);
+  }
+  return { results: [] };
+}
+
+async function directApi(path, options = {}) {
+  let body = {};
+  if (options.body) {
+    body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
+  }
+  if (path === '/api/search') return directSearch(body);
+  if (path === '/api/route') return directRoute(body);
+  if (path.startsWith('/api/geocode')) {
+    return directGeocode(new URL(path, location.href).searchParams.get('q') || '');
+  }
+  throw new Error(`Unexpected request: ${path}`);
+}
+
+async function detectServerMode() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    let response;
+    try {
+      response = await fetch('/api/health', { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (response.ok && (await response.json()).ok) return;
+  } catch {
+    // Static file server (or no server at all): fall through.
+  }
+  announceStaticMode();
+}
+
 async function api(path, options) {
-  const response = await fetch(path, options);
+  if (staticMode) return directApi(path, options);
+
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch {
+    announceStaticMode();
+    return directApi(path, options);
+  }
+
+  const text = await response.text();
   let data;
   try {
-    data = await response.json();
+    data = JSON.parse(text);
   } catch {
-    throw new Error('The server returned an unreadable response.');
+    // A static file server answers /api/* with an HTML 404 page.
+    announceStaticMode();
+    return directApi(path, options);
   }
-  if (!response.ok) throw new Error(data.error || 'The request failed.');
+
+  if (!response.ok) {
+    announceStaticMode();
+    try {
+      return await directApi(path, options);
+    } catch {
+      throw new Error(data.error || 'The request failed.');
+    }
+  }
   return data;
 }
 
@@ -449,7 +678,7 @@ function renderWelcome() {
       </button>`;
     }).join('')}
   `;
-  $('resultsFooter').textContent = `Search radius ${state.radius / 1000} km · Powered by OpenStreetMap`;
+  $('resultsFooter').textContent = `Search radius ${state.radius / 1000} km · Powered by OpenStreetMap${staticMode ? ' · Static hosting mode' : ''}`;
 }
 
 function setInlineStatus(element, message, isError = false) {
@@ -1063,6 +1292,7 @@ document.addEventListener('keydown', (event) => {
 
 renderChips();
 renderWelcome();
+await detectServerMode();
 setMapPadding();
 requestLocation();
 

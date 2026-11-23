@@ -37,6 +37,8 @@ No `npm install` is needed: the server uses only Node built-ins. The folder is d
 - Place-name lookup: Photon, with Nominatim as a fallback.
 - Base map: OpenFreeMap; satellite imagery: Esri World Imagery.
 
+The app prefers the local Node server, but also works when the folder is served by any static file server (or through an IDE preview): it detects the missing `/api` endpoints at startup and calls Overpass, Valhalla, and Photon directly from the browser instead. A toast confirms "Static hosting mode".
+
 There is no simulated starting point: the app asks for device location on launch (over HTTPS or `localhost`) and refuses to search until it has a real fix. If access is denied, use the **Use my location** button in the panel after enabling location in your browser settings. Public data services can be slow or rate-limited; the server retries several Overpass endpoints and caches responses for five minutes.
 
 On phones the results panel is a draggable-style bottom sheet: tap the handle to expand it to nearly full screen. During navigation the search bar and sheet get out of the way so the route banner and map have the whole screen.

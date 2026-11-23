@@ -124,3 +124,82 @@ export function categoryForTags(tags = {}) {
   }
   return OTHER_CATEGORY;
 }
+
+// Shared by the Node server and the browser fallback, so both produce
+// identical results whether the app runs behind its server or on static hosting.
+export function haversineMeters(lat1, lon1, lat2, lon2) {
+  const rad = (degrees) => degrees * Math.PI / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLon = rad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(a));
+}
+
+export function buildOverpassQuery({ lat, lon, radius, categoryId, text }) {
+  const around = `(around:${Math.round(radius)},${lat.toFixed(6)},${lon.toFixed(6)})`;
+  let selectors;
+
+  if (categoryId && CATEGORY_BY_ID[categoryId]) {
+    selectors = CATEGORY_BY_ID[categoryId].filters.map((filter) => {
+      const [key, value] = filter.split('=');
+      return `nwr["${key}"="${value}"]${around};`;
+    });
+  } else if (text) {
+    const pattern = String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').slice(0, 80);
+    selectors = [
+      `nwr["name"~"${pattern}",i]${around};`,
+      `nwr["amenity"~"${pattern}",i]${around};`,
+      `nwr["shop"~"${pattern}",i]${around};`,
+      `nwr["leisure"~"${pattern}",i]${around};`,
+      `nwr["tourism"~"${pattern}",i]${around};`
+    ];
+  } else {
+    return null;
+  }
+
+  return `[out:json][timeout:25];\n(\n${selectors.join('\n')}\n);\nout center tags;`;
+}
+
+export function normalizePlaces(elements, lat, lon) {
+  const seen = new Set();
+  const places = [];
+
+  for (const element of elements || []) {
+    const placeLat = element.lat ?? element.center?.lat;
+    const placeLon = element.lon ?? element.center?.lon;
+    if (!Number.isFinite(placeLat) || !Number.isFinite(placeLon)) continue;
+
+    const id = `${element.type || 'n'}-${element.id}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const tags = element.tags || {};
+    const category = categoryForTags(tags);
+    places.push({
+      id,
+      lat: placeLat,
+      lon: placeLon,
+      category: category.id,
+      distanceMeters: Math.round(haversineMeters(lat, lon, placeLat, placeLon)),
+      name: tags['name:en'] || tags.name || '',
+      brand: tags.brand || tags.operator || '',
+      address: [tags['addr:housenumber'], tags['addr:street'], tags['addr:city'], tags['addr:postcode']]
+        .filter(Boolean).join(' '),
+      hours: tags.opening_hours || '',
+      phone: tags['contact:phone'] || tags.phone || '',
+      website: tags['contact:website'] || tags.website || '',
+      details: [
+        tags.cuisine && `Cuisine: ${tags.cuisine.replaceAll('_', ' ')}`,
+        tags.fee === 'no' && 'Free entry',
+        tags.fee === 'yes' && 'Fee may apply',
+        tags.access && `Access: ${tags.access}`,
+        tags.description
+      ].filter(Boolean).join(' · '),
+      tags
+    });
+  }
+
+  places.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  return places.slice(0, 80);
+}
